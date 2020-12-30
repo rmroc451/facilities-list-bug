@@ -81,7 +81,6 @@ namespace Simvars
         {
             if (sender is Slider oSlider && this.DataContext is SimvarsViewModel oContext)
             {
-                oContext.SetTickSliderValue((int)oSlider.Value);
             }
         }
     }

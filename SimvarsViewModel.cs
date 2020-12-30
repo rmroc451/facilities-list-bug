@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
 
@@ -87,7 +89,6 @@ namespace Simvars
         {
             Console.WriteLine("Disconnect");
 
-            m_oTimer.Stop();
             bOddTick = false;
 
             if (m_oSimConnect != null)
@@ -147,7 +148,7 @@ namespace Simvars
             }
         }
         private uint m_iObjectIdRequest = 0;
-        
+
 
         public string[] aSimvarNames
         {
@@ -244,12 +245,6 @@ namespace Simvars
 
         #endregion
 
-        #region Real time
-
-        private DispatcherTimer m_oTimer = new DispatcherTimer();
-
-        #endregion
-
         public SimvarsViewModel()
         {
             lObjectIDs = new ObservableCollection<uint>();
@@ -264,9 +259,6 @@ namespace Simvars
             cmdTrySetValue = new BaseCommand((p) => { TrySetValue(); });
             cmdLoadFiles = new BaseCommand((p) => { LoadFiles(); });
             cmdSaveFile = new BaseCommand((p) => { SaveFile(false); });
-
-            m_oTimer.Interval = new TimeSpan(0, 0, 0, 1, 0);
-            m_oTimer.Tick += new EventHandler(OnTick);
         }
 
         private void Connect()
@@ -276,7 +268,7 @@ namespace Simvars
             try
             {
                 /// The constructor is similar to SimConnect_Open in the native API
-                m_oSimConnect = new SimConnect("Simconnect - Simvar test", m_hWnd, WM_USER_SIMCONNECT, null, bFSXcompatible? (uint)1 : 0);
+                m_oSimConnect = new SimConnect("Simconnect - Simvar test", m_hWnd, WM_USER_SIMCONNECT, null, bFSXcompatible ? (uint)1 : 0);
 
                 /// Listen to connect and quit msgs
                 m_oSimConnect.OnRecvOpen += new SimConnect.RecvOpenEventHandler(SimConnect_OnRecvOpen);
@@ -285,12 +277,54 @@ namespace Simvars
                 /// Listen to exceptions
                 m_oSimConnect.OnRecvException += new SimConnect.RecvExceptionEventHandler(SimConnect_OnRecvException);
 
-                /// Catch a simobject data request
-                m_oSimConnect.OnRecvSimobjectDataBytype += new SimConnect.RecvSimobjectDataBytypeEventHandler(SimConnect_OnRecvSimobjectDataBytype);
+                m_oSimConnect.OnRecvAirportList += Simconnect_OnRecvAirportList;
+
+                m_oSimConnect?.SubscribeToFacilities(SIMCONNECT_FACILITY_LIST_TYPE.AIRPORT, DATA_REQUESTS.AIRPORT_DATA_SUB);
             }
             catch (COMException ex)
             {
                 Console.WriteLine("Connection to KH failed: " + ex.Message);
+            }
+        }
+
+        private List<SIMCONNECT_DATA_FACILITY_AIRPORT> subAirports = new List<SIMCONNECT_DATA_FACILITY_AIRPORT>();
+        private List<SIMCONNECT_DATA_FACILITY_AIRPORT> pollAirports = new List<SIMCONNECT_DATA_FACILITY_AIRPORT>();
+        private List<SIMCONNECT_DATA_FACILITY_AIRPORT> subAirportsDistinct = new List<SIMCONNECT_DATA_FACILITY_AIRPORT>();
+        private List<SIMCONNECT_DATA_FACILITY_AIRPORT> pollAirportsDistinct = new List<SIMCONNECT_DATA_FACILITY_AIRPORT>();
+
+        private void Simconnect_OnRecvAirportList(SimConnect sender, SIMCONNECT_RECV_AIRPORT_LIST data)
+        {
+            string text = $"Airport List (page {data.dwEntryNumber + 1} of {data.dwOutOf} w/ {data.rgData.Length} rows of data):";
+            switch ((DATA_REQUESTS)data.dwRequestID)
+            {
+                case DATA_REQUESTS.AIRPORT_DATA_SUB:
+                    subAirports.AddRange(data.rgData.Select((object item) => (SIMCONNECT_DATA_FACILITY_AIRPORT)item));
+                    subAirportsDistinct = subAirports.Distinct(new AirportComparer()).ToList();
+
+
+                    lErrorMessages.Add($"{text}: {subAirports.Count()} total / {subAirportsDistinct.Count()} unique");
+
+
+                    if (data.dwEntryNumber + 1 == data.dwOutOf)
+                    {
+                        lErrorMessages.Add($@"Count of KCWA in the total list = {
+                            subAirports.Where((SIMCONNECT_DATA_FACILITY_AIRPORT airport) => airport.Icao.Equals("KCWA", StringComparison.OrdinalIgnoreCase)).Count()
+                        }");
+                        lErrorMessages.Add($@"Count of KHYI in the total list = {
+                            subAirports.Where((SIMCONNECT_DATA_FACILITY_AIRPORT airport) => airport.Icao.Equals("KHYI", StringComparison.OrdinalIgnoreCase)).Count()
+                        }");
+                        lErrorMessages.Add($@"Count of KLAX in the total list = {
+                            subAirports.Where((SIMCONNECT_DATA_FACILITY_AIRPORT airport) => airport.Icao.Equals("KLAX", StringComparison.OrdinalIgnoreCase)).Count()
+                        }");
+                        lErrorMessages.Add($@"Count of KLAX in the distinct list = {
+                            subAirportsDistinct.Where((SIMCONNECT_DATA_FACILITY_AIRPORT airport) => airport.Icao.Equals("KLAX", StringComparison.OrdinalIgnoreCase)).Count()
+                        }");
+                    }
+                    break;
+
+                default:
+                    lErrorMessages.Add("Unknown Simconnect_OnRecvAirportList request ID: " + data.dwRequestID);
+                    break;
             }
         }
 
@@ -311,8 +345,6 @@ namespace Simvars
                     oSimvarRequest.bStillPending = oSimvarRequest.bPending;
                 }
             }
-
-            m_oTimer.Start();
             bOddTick = false;
         }
 
@@ -331,28 +363,6 @@ namespace Simvars
             Console.WriteLine("SimConnect_OnRecvException: " + eException.ToString());
 
             lErrorMessages.Add("SimConnect : " + eException.ToString());
-        }
-
-        private void SimConnect_OnRecvSimobjectDataBytype(SimConnect sender, SIMCONNECT_RECV_SIMOBJECT_DATA_BYTYPE data)
-        {
-            Console.WriteLine("SimConnect_OnRecvSimobjectDataBytype");
-
-            uint iRequest = data.dwRequestID;
-            uint iObject = data.dwObjectID;
-            if (!lObjectIDs.Contains(iObject))
-            {
-                lObjectIDs.Add(iObject);
-            }
-            foreach (SimvarRequest oSimvarRequest in lSimvarRequests)
-            {
-                if (iRequest == (uint)oSimvarRequest.eRequest && (!bObjectIDSelectionEnabled || iObject == m_iObjectIdRequest))
-                {
-                    double dValue = (double)data.dwData[0];
-                    oSimvarRequest.dValue = dValue;
-                    oSimvarRequest.bPending = false;
-                    oSimvarRequest.bStillPending = false;
-                }
-            }
         }
 
         // May not be the best way to achive regular requests.
@@ -538,10 +548,48 @@ namespace Simvars
                 }
             }
         }
+    }
+}
 
-        public void SetTickSliderValue(int _iValue)
-        {
-            m_oTimer.Interval = new TimeSpan(0, 0, 0, 0, (int)(_iValue));
-        }
+internal enum DATA_REQUESTS
+{
+    AIRPORT_DATA_SUB
+}
+
+class AirportComparer : IEqualityComparer<SIMCONNECT_DATA_FACILITY_AIRPORT>
+{
+    // Products are equal if their names and product numbers are equal.
+    public bool Equals(SIMCONNECT_DATA_FACILITY_AIRPORT x, SIMCONNECT_DATA_FACILITY_AIRPORT y)
+    {
+
+        //Check whether the compared objects reference the same data.
+        if (Object.ReferenceEquals(x, y)) return true;
+
+        //Check whether any of the compared objects is null.
+        if (Object.ReferenceEquals(x, null) || Object.ReferenceEquals(y, null))
+            return false;
+
+        //Check whether the products' properties are equal.
+        return x.Icao == y.Icao &&
+            x.Altitude == y.Altitude &&
+            x.Latitude == y.Latitude &&
+            x.Longitude == y.Longitude;
+    }
+
+    // If Equals() returns true for a pair of objects
+    // then GetHashCode() must return the same value for these objects.
+
+    public int GetHashCode(SIMCONNECT_DATA_FACILITY_AIRPORT airport)
+    {
+        //Check whether the object is null
+        if (Object.ReferenceEquals(airport, null)) return 0;
+
+        int hashIcao = airport.Icao == null ? 0 : airport.Icao.GetHashCode();
+        int hashAlt = airport.Altitude == double.MinValue ? 0 : airport.Altitude.GetHashCode();
+        int hashLat = airport.Latitude == double.MinValue ? 0 : airport.Latitude.GetHashCode();
+        int hashLon = airport.Longitude == double.MinValue ? 0 : airport.Longitude.GetHashCode();
+
+        //Calculate the hash code for the product.
+        return hashIcao ^ hashAlt ^ hashLat ^ hashLon;
     }
 }
