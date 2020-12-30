@@ -43,7 +43,7 @@
   <ItemGroup>
     <Reference Include="Microsoft.FlightSimulator.SimConnect, Version=10.0.62615.0, Culture=neutral, PublicKeyToken=5f523ae7e6e1b389, processorArchitecture=x86">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
+      <HintPath>.\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Data" />
@@ -114,7 +114,7 @@
   </PropertyGroup>
   <PropertyGroup>
     <PostBuildEvent>xcopy "$(ProjectDir)SimConnect.cfg" "." /Y
-xcopy "$(ProjectDir)..\..\SimConnect SDK\lib\SimConnect.dll" "." /Y
+xcopy "$(ProjectDir)SimConnect.dll" "." /Y
 </PostBuildEvent>
   </PropertyGroup>
 </Project>
